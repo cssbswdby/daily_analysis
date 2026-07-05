@@ -1408,6 +1408,9 @@ _COMMON_WORDS: set[str] = {
     "TTM", "LTM", "NTM", "FWD", "YOY", "QOQ", "YTD",
     "EBIT", "EBITDA", "DCF", "CAGR", "FCF", "NAV", "AUM",
     "PE", "PB",
+    # Tech / networking abbreviations that look like tickers
+    "VPN", "API", "CPU", "GPU", "DNS", "HTTP", "HTTPS", "SSH",
+    "SSL", "TLS", "URL", "URI", "FTP", "TCP", "UDP", "RAM", "SSD",
     # Greetings / filler words that often appear in chat messages
     "HELLO", "PLEASE", "THANKS", "CHECK", "LOOK", "THINK",
     "MAYBE", "GUESS", "TELL", "SHOW", "WHAT", "WHATS",
