@@ -195,6 +195,11 @@ def resolve_stock_scope(
     if not current_code:
         if invalid_context_code:
             candidates = extract_stock_codes(message_text)
+            if not candidates:
+                return StockScopeResolution(
+                    effective_context=_with_skills(original_context, skills),
+                    stock_scope=None,
+                )
             allowed = set(candidates)
             expected = candidates[0] if len(candidates) == 1 else ""
             effective_context = dict(original_context)
