@@ -264,6 +264,50 @@ def _extract_latest_row(df: pd.DataFrame, stock_code: str) -> Optional[pd.Series
 class AkshareFundamentalAdapter:
     """AkShare adapter for fundamentals, capital flow and dragon-tiger signals."""
 
+    def _tushare_moneyflow_fallback(self, stock_code: str) -> Tuple[Dict[str, Any], List[str]]:
+        """Tushare moneyflow fallback when AkShare (East Money push2) is unreachable."""
+        errors: List[str] = []
+        try:
+            import os
+            token = os.environ.get("TUSHARE_TOKEN", "")
+            if not token:
+                return {}, ["tushare_fallback:no_token"]
+
+            import tushare as ts
+            ts.set_token(token)
+            pro = ts.pro_api()
+
+            code = stock_code.strip()
+            if code.startswith("6"):
+                ts_code = f"{code}.SH"
+            elif code.startswith(("0", "3")):
+                ts_code = f"{code}.SZ"
+            elif code.startswith(("8", "4")):
+                ts_code = f"{code}.BJ"
+            else:
+                ts_code = code
+
+            end_date = datetime.now().strftime("%Y%m%d")
+            start_date = (datetime.now() - timedelta(days=20)).strftime("%Y%m%d")
+
+            df = pro.moneyflow(ts_code=ts_code, start_date=start_date, end_date=end_date)
+            if df is None or df.empty:
+                return {}, ["tushare_fallback:no_data"]
+
+            df = df.sort_values("trade_date", ascending=False)
+            latest = df.iloc[0]
+            net_inflow = _safe_float(latest.get("net_mf_amount"))
+            inflow_5d = _safe_float(df.head(5)["net_mf_amount"].sum()) if len(df) >= 1 else None
+            inflow_10d = _safe_float(df.head(10)["net_mf_amount"].sum()) if len(df) >= 1 else None
+
+            return {
+                "main_net_inflow": net_inflow,
+                "inflow_5d": inflow_5d,
+                "inflow_10d": inflow_10d,
+            }, ["tushare_fallback:ok"]
+        except Exception as exc:
+            return {}, [f"tushare_fallback:{type(exc).__name__}:{str(exc)[:120]}"]
+
     def _call_df_candidates(
         self,
         candidates: List[Tuple[str, Dict[str, Any]]],
@@ -445,6 +489,13 @@ class AkshareFundamentalAdapter:
                     "inflow_10d": inflow_10d,
                 }
                 result["source_chain"].append(f"capital_stock:{stock_source}")
+
+        if not result["stock_flow"]:
+            ts_flow, ts_errors = self._tushare_moneyflow_fallback(stock_code)
+            result["errors"].extend(ts_errors)
+            if ts_flow:
+                result["stock_flow"] = ts_flow
+                result["source_chain"].append("capital_stock:tushare_fallback")
 
         sector_df, sector_source, sector_errors = self._call_df_candidates([
             ("stock_sector_fund_flow_rank", {}),
