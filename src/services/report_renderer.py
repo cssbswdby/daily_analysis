@@ -248,7 +248,10 @@ def render(
             autoescape=select_autoescape(default=False),
         )
         template = env.get_template(template_name)
-        return template.render(**context)
+        result = template.render(**context)
+        print(f"DEBUG_RENDERER: template={template_name} result_len={len(result) if result else 0}")
+        return result
     except Exception as e:
+        print(f"DEBUG_RENDERER: RENDER_FAILED template={template_name} error={e}")
         logger.warning("Report render failed for %s: %s", template_name, e)
         return None
