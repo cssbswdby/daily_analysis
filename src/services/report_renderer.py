@@ -124,6 +124,34 @@ def render(
 
     # Build template context with pre-computed signal levels (sorted by score)
     sorted_results = sorted(results, key=lambda x: x.sentiment_score, reverse=True)
+    def _extract_capital_flow(result: AnalysisResult) -> Dict[str, Any]:
+        """Extract capital flow data from fundamental_context for template rendering."""
+        fc = getattr(result, 'fundamental_context', None)
+        if not isinstance(fc, dict):
+            return {}
+        cf_block = fc.get("capital_flow", {})
+        if not isinstance(cf_block, dict):
+            return {}
+        cf_data = cf_block.get("data", {}) if isinstance(cf_block.get("data"), dict) else cf_block
+        stock_flow = cf_data.get("stock_flow", {}) if isinstance(cf_data, dict) else {}
+        sector_flow = cf_data.get("sector_rankings", {}) if isinstance(cf_data, dict) else {}
+        has_data = (
+            isinstance(stock_flow, dict) and any(v is not None for v in stock_flow.values())
+        ) or (
+            isinstance(sector_flow, dict) and (sector_flow.get("top") or sector_flow.get("bottom"))
+        )
+        if not has_data:
+            return {}
+        top_sectors = sector_flow.get("top", []) if isinstance(sector_flow, dict) else []
+        bottom_sectors = sector_flow.get("bottom", []) if isinstance(sector_flow, dict) else {}
+        return {
+            "main_net_inflow": stock_flow.get("main_net_inflow"),
+            "inflow_5d": stock_flow.get("inflow_5d"),
+            "inflow_10d": stock_flow.get("inflow_10d"),
+            "sector_inflow_top": [s.get("name", "") for s in top_sectors[:3] if isinstance(s, dict)] or [],
+            "sector_outflow_top": [s.get("name", "") for s in bottom_sectors[:3] if isinstance(s, dict)] or [],
+        }
+
     sorted_enriched = []
     for r in sorted_results:
         st, se, _ = get_signal_level(r.operation_advice, r.sentiment_score, report_language)
@@ -135,6 +163,7 @@ def render(
             "stock_name": _escape_md(rn),
             "localized_operation_advice": localize_operation_advice(r.operation_advice, report_language),
             "localized_trend_prediction": localize_trend_prediction(r.trend_prediction, report_language),
+            "capital_flow": _extract_capital_flow(r),
         })
 
     buy_count = sum(1 for r in results if getattr(r, "decision_type", "") == "buy")

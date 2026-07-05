@@ -113,6 +113,20 @@
 {% endif %}
 {% endif %}
 
+{% set cf = e.capital_flow if e.capital_flow is defined else {} %}
+{% if cf %}
+### 💰 {{ labels.capital_flow_heading }}
+
+| {{ labels.main_net_inflow_label }} | {{ labels.inflow_5d_label }} | {{ labels.inflow_10d_label }} |
+|------|------|------|
+| {{ cf.main_net_inflow or 'N/A' }} | {{ cf.inflow_5d or 'N/A' }} | {{ cf.inflow_10d or 'N/A' }} |
+
+{% if cf.sector_inflow_top %}**🟢 {{ labels.sector_inflow_top_label }}**: {{ cf.sector_inflow_top|join('、') }}
+{% endif %}
+{% if cf.sector_outflow_top %}**🔴 {{ labels.sector_outflow_top_label }}**: {{ cf.sector_outflow_top|join('、') }}
+{% endif %}
+{% endif %}
+
 {% set phase_decision = dashboard.get('phase_decision') or {} %}
 {% set phase_decision_has_content = phase_decision.get('action_window') %}
 {% set phase_decision_has_content = phase_decision_has_content or phase_decision.get('immediate_action') %}

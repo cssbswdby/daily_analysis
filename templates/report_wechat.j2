@@ -69,6 +69,15 @@
 {% endif %}
 {% endif %}
 
+{% set cf = e.capital_flow if e.capital_flow is defined else {} %}
+{% if cf %}
+💰 **{{ labels.main_net_inflow_label }}**: {{ cf.main_net_inflow or 'N/A' }} | {{ labels.inflow_5d_label }}: {{ cf.inflow_5d or 'N/A' }} | {{ labels.inflow_10d_label }}: {{ cf.inflow_10d or 'N/A' }}
+{% if cf.sector_inflow_top %}🟢 {{ (cf.sector_inflow_top|join('、'))[:60] }}
+{% endif %}
+{% if cf.sector_outflow_top %}🔴 {{ (cf.sector_outflow_top|join('、'))[:60] }}
+{% endif %}
+{% endif %}
+
 {% set checklist = battle.get('action_checklist', []) if battle else [] %}
 {% set fc = failed_checks(checklist) %}
 {% if fc %}
