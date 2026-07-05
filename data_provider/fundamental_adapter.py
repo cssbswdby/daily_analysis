@@ -264,6 +264,205 @@ def _extract_latest_row(df: pd.DataFrame, stock_code: str) -> Optional[pd.Series
 class AkshareFundamentalAdapter:
     """AkShare adapter for fundamentals, capital flow and dragon-tiger signals."""
 
+    def _tencent_tick_capital_flow(self, stock_code: str) -> Tuple[Dict[str, Any], List[str]]:
+        """Compute capital flow from Tencent tick-by-tick transaction data (bypasses East Money push2)."""
+        errors: List[str] = []
+        try:
+            import akshare as ak
+
+            code = stock_code.strip()
+            if code.startswith("6"):
+                symbol = f"sh{code}"
+            elif code.startswith(("0", "3")):
+                symbol = f"sz{code}"
+            else:
+                symbol = f"sh{code}"
+
+            df = ak.stock_zh_a_tick_tx_js(symbol=symbol)
+            if df is None or df.empty:
+                return {}, ["tencent_tick:no_data"]
+
+            df["amount"] = df["成交金额"].astype(float)
+            df["buy"] = df["性质"].astype(str).str.contains("买")
+            df["sell"] = df["性质"].astype(str).str.contains("卖")
+
+            # Classification: 超大单>100万, 大单20-100万, 中单4-20万, 小单<4万
+            categories = [
+                ("super_large", df[df["amount"] > 1000000]),
+                ("large", df[(df["amount"] >= 200000) & (df["amount"] <= 1000000)]),
+                ("medium", df[(df["amount"] >= 40000) & (df["amount"] < 200000)]),
+                ("small", df[df["amount"] < 40000]),
+            ]
+
+            breakdown = {}
+            for name, sub in categories:
+                buy_amt = sub[sub["buy"]]["amount"].sum()
+                sell_amt = sub[sub["sell"]]["amount"].sum()
+                breakdown[name] = {
+                    "count": len(sub),
+                    "buy": float(buy_amt),
+                    "sell": float(sell_amt),
+                    "net": float(buy_amt - sell_amt),
+                }
+
+            main_net = breakdown["super_large"]["net"] + breakdown["large"]["net"]
+
+            # Top 10 largest trades
+            top_df = df.nlargest(10, "amount")
+            top_trades = []
+            for _, row in top_df.iterrows():
+                side = "买盘" if row["buy"] else ("卖盘" if row["sell"] else "中性")
+                top_trades.append({
+                    "time": str(row.get("成交时间", "")),
+                    "price": float(row.get("成交价格", 0)),
+                    "volume": int(row.get("成交量", 0)),
+                    "amount": float(row.get("成交金额", 0)),
+                    "side": side,
+                })
+
+            return {
+                "main_net_inflow": float(main_net) if main_net else 0.0,
+                "inflow_5d": None,
+                "inflow_10d": None,
+                "breakdown": breakdown,
+                "top_trades": top_trades,
+            }, ["tencent_tick:ok"]
+        except Exception as exc:
+            return {}, [f"tencent_tick:{type(exc).__name__}:{str(exc)[:100]}"]
+
+    def _sina_sector_flow(self, top_n: int = 5) -> Tuple[List[Dict], List[Dict], List[str]]:
+        """Fetch sector fund flow rankings from Sina Finance (bypasses East Money)."""
+        errors: List[str] = []
+        try:
+            import requests
+            headers = {"User-Agent": "Mozilla/5.0", "Referer": "https://finance.sina.com.cn"}
+
+            # Top inflow sectors
+            r = requests.get(
+                "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk",
+                params={"page": "1", "num": str(top_n), "sort": "netamount", "asc": "0", "fenlei": "1"},
+                headers=headers, timeout=8,
+            )
+            top_data = r.json() if r.text.strip() else []
+            top = [{"name": s.get("name", ""), "net_inflow": _safe_float(s.get("netamount"))} for s in (top_data or []) if s.get("name")]
+
+            # Top outflow sectors
+            r2 = requests.get(
+                "https://vip.stock.finance.sina.com.cn/quotes_service/api/json_v2.php/MoneyFlow.ssl_bkzj_bk",
+                params={"page": "1", "num": str(top_n), "sort": "netamount", "asc": "1", "fenlei": "1"},
+                headers=headers, timeout=8,
+            )
+            bottom_data = r2.json() if r2.text.strip() else []
+            bottom = [{"name": s.get("name", ""), "net_inflow": _safe_float(s.get("netamount"))} for s in (bottom_data or []) if s.get("name")]
+
+            return top, bottom, ["sina_sector:ok"]
+        except Exception as exc:
+            return [], [], [f"sina_sector:{type(exc).__name__}:{str(exc)[:80]}"]
+
+    def _playwright_capital_flow(self, stock_code: str, top_n: int = 5) -> Dict[str, Any]:
+        """Playwright-based capital flow fallback using real Chrome browser to bypass TLS fingerprinting."""
+        result: Dict[str, Any] = {
+            "status": "not_supported",
+            "stock_flow": {},
+            "sector_rankings": {"top": [], "bottom": []},
+            "source_chain": [],
+            "errors": [],
+        }
+        try:
+            from playwright.sync_api import sync_playwright
+            import json as _json
+
+            code = stock_code.strip()
+            if code.startswith("6"):
+                secid = f"1.{code}"
+            elif code.startswith(("0", "3")):
+                secid = f"0.{code}"
+            else:
+                secid = f"1.{code}"
+
+            with sync_playwright() as p:
+                browser = p.chromium.launch(channel="chrome", headless=True)
+                page = browser.new_page()
+                page.goto("https://data.eastmoney.com/", timeout=20000, wait_until="domcontentloaded")
+                page.wait_for_timeout(3000)
+
+                # Fetch individual stock fund flow (last 10 trading days)
+                stock_raw = None
+                for _attempt in range(3):
+                    try:
+                        stock_raw = page.evaluate('''async (secid) => {
+                            const url = 'https://push2.eastmoney.com/api/qt/stock/fflow/daykline/get';
+                            const params = new URLSearchParams({
+                                'secid': secid, 'lmt': '10',
+                                'fields1': 'f1,f2,f3,f7',
+                                'fields2': 'f51,f52,f53,f54,f55,f56,f57,f58,f59,f60,f61,f62,f63,f64,f65'
+                            });
+                            const r = await fetch(url + '?' + params.toString());
+                            return await r.text();
+                        }''', secid)
+                        if stock_raw and len(stock_raw) > 10:
+                            break
+                    except Exception:
+                        page.wait_for_timeout(2000)
+
+                stock_data = _json.loads(stock_raw)
+                if stock_data.get("data") and stock_data["data"].get("klines"):
+                    klines = stock_data["data"]["klines"]
+                    main_nets = []
+                    for kline in klines:
+                        parts = kline.split(",")
+                        if len(parts) >= 2:
+                            main_nets.append(_safe_float(parts[1]))
+                    if main_nets:
+                        result["stock_flow"] = {
+                            "main_net_inflow": main_nets[-1],
+                            "inflow_5d": sum(main_nets[-5:]) if len(main_nets) >= 1 else None,
+                            "inflow_10d": sum(main_nets[-10:]) if len(main_nets) >= 1 else None,
+                        }
+                        result["source_chain"].append("capital_stock:playwright")
+
+                # Fetch sector fund flow rankings (top N by net inflow)
+                sector_raw = page.evaluate('''async () => {
+                    const url = 'https://push2.eastmoney.com/api/qt/clist/get';
+                    const params = new URLSearchParams({
+                        'fid': 'f62', 'po': '1', 'pz': '10', 'pn': '1', 'np': '1',
+                        'fltt': '2', 'invt': '2', 'fs': 'm:90 t:2',
+                        'fields': 'f12,f14,f62'
+                    });
+                    const r = await fetch(url + '?' + params.toString());
+                    return await r.text();
+                }''')
+
+                sector_data = _json.loads(sector_raw)
+                if sector_data.get("data") and sector_data["data"].get("diff"):
+                    sectors = sector_data["data"]["diff"]
+                    top = [{"name": s.get("f14", ""), "net_inflow": _safe_float(s.get("f62"))} for s in sectors[:top_n] if s.get("f14")]
+                    bottom_raw = page.evaluate('''async () => {
+                        const url = 'https://push2.eastmoney.com/api/qt/clist/get';
+                        const params = new URLSearchParams({
+                            'fid': 'f62', 'po': '0', 'pz': '10', 'pn': '1', 'np': '1',
+                            'fltt': '2', 'invt': '2', 'fs': 'm:90 t:2',
+                            'fields': 'f12,f14,f62'
+                        });
+                        const r = await fetch(url + '?' + params.toString());
+                        return await r.text();
+                    }''')
+                    bottom_data = _json.loads(bottom_raw)
+                    bottom_sectors = bottom_data.get("data", {}).get("diff", []) if bottom_data.get("data") else []
+                    bottom = [{"name": s.get("f14", ""), "net_inflow": _safe_float(s.get("f62"))} for s in bottom_sectors[:top_n] if s.get("f14")]
+                    result["sector_rankings"] = {"top": top, "bottom": bottom}
+                    result["source_chain"].append("capital_sector:playwright")
+
+                browser.close()
+
+            has_content = bool(result["stock_flow"] or result["sector_rankings"]["top"])
+            result["status"] = "partial" if has_content else "not_supported"
+            if not has_content:
+                result["errors"].append("playwright:no_data")
+        except Exception as exc:
+            result["errors"].append(f"playwright:{type(exc).__name__}:{str(exc)[:100]}")
+        return result
+
     def _tushare_moneyflow_fallback(self, stock_code: str) -> Tuple[Dict[str, Any], List[str]]:
         """Tushare moneyflow fallback when AkShare (East Money push2) is unreachable."""
         errors: List[str] = []
@@ -469,27 +668,45 @@ class AkshareFundamentalAdapter:
             "errors": [],
         }
 
-        stock_df, stock_source, stock_errors = self._call_df_candidates([
-            ("stock_individual_fund_flow", {"stock": stock_code}),
-            ("stock_individual_fund_flow", {"symbol": stock_code}),
-            ("stock_individual_fund_flow", {}),
-            ("stock_main_fund_flow", {"symbol": stock_code}),
-            ("stock_main_fund_flow", {}),
-        ])
-        result["errors"].extend(stock_errors)
-        if stock_df is not None:
-            row = _extract_latest_row(stock_df, stock_code)
-            if row is not None:
-                net_inflow = _safe_float(_pick_by_keywords(row, ["主力净流入", "净流入", "净额"]))
-                inflow_5d = _safe_float(_pick_by_keywords(row, ["5日", "五日"]))
-                inflow_10d = _safe_float(_pick_by_keywords(row, ["10日", "十日"]))
-                result["stock_flow"] = {
-                    "main_net_inflow": net_inflow,
-                    "inflow_5d": inflow_5d,
-                    "inflow_10d": inflow_10d,
-                }
-                result["source_chain"].append(f"capital_stock:{stock_source}")
+        # 1. Try Tencent tick data first (bypasses East Money push2 anti-bot)
+        tx_flow, tx_errors = self._tencent_tick_capital_flow(stock_code)
+        result["errors"].extend(tx_errors)
+        if tx_flow:
+            result["stock_flow"] = tx_flow
+            result["source_chain"].append("capital_stock:tencent_tick")
 
+        # 2. Try Sina for sector rankings first (bypasses East Money push2)
+        sina_top, sina_bottom, sina_errors = self._sina_sector_flow(top_n)
+        result["errors"].extend(sina_errors)
+        if sina_top:
+            result["sector_rankings"]["top"] = sina_top
+            result["sector_rankings"]["bottom"] = sina_bottom
+            result["source_chain"].append("capital_sector:sina")
+
+        # 3. Fallback: AkShare for stock_flow if Tencent failed
+        if not result["stock_flow"]:
+            stock_df, stock_source, stock_errors = self._call_df_candidates([
+                ("stock_individual_fund_flow", {"stock": stock_code}),
+                ("stock_individual_fund_flow", {"symbol": stock_code}),
+                ("stock_individual_fund_flow", {}),
+                ("stock_main_fund_flow", {"symbol": stock_code}),
+                ("stock_main_fund_flow", {}),
+            ])
+            result["errors"].extend(stock_errors)
+            if stock_df is not None:
+                row = _extract_latest_row(stock_df, stock_code)
+                if row is not None:
+                    net_inflow = _safe_float(_pick_by_keywords(row, ["主力净流入", "净流入", "净额"]))
+                    inflow_5d = _safe_float(_pick_by_keywords(row, ["5日", "五日"]))
+                    inflow_10d = _safe_float(_pick_by_keywords(row, ["10日", "十日"]))
+                    result["stock_flow"] = {
+                        "main_net_inflow": net_inflow,
+                        "inflow_5d": inflow_5d,
+                        "inflow_10d": inflow_10d,
+                    }
+                    result["source_chain"].append(f"capital_stock:{stock_source}")
+
+        # 4. Fallback: Tushare if still no stock_flow
         if not result["stock_flow"]:
             ts_flow, ts_errors = self._tushare_moneyflow_fallback(stock_code)
             result["errors"].extend(ts_errors)
@@ -497,25 +714,39 @@ class AkshareFundamentalAdapter:
                 result["stock_flow"] = ts_flow
                 result["source_chain"].append("capital_stock:tushare_fallback")
 
-        sector_df, sector_source, sector_errors = self._call_df_candidates([
-            ("stock_sector_fund_flow_rank", {}),
-            ("stock_sector_fund_flow_summary", {}),
-        ])
-        result["errors"].extend(sector_errors)
-        if sector_df is not None:
-            name_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("板块", "行业", "名称", "name"))), None)
-            flow_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("净流入", "主力", "flow", "净额"))), None)
-            if name_col and flow_col:
-                work_df = sector_df[[name_col, flow_col]].copy()
-                work_df[flow_col] = pd.to_numeric(work_df[flow_col], errors="coerce")
-                work_df = work_df.dropna(subset=[flow_col])
-                top_df = work_df.nlargest(top_n, flow_col)
-                bottom_df = work_df.nsmallest(top_n, flow_col)
-                result["sector_rankings"] = {
-                    "top": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in top_df.iterrows()],
-                    "bottom": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in bottom_df.iterrows()],
-                }
-                result["source_chain"].append(f"capital_sector:{sector_source}")
+        # 5. Fallback: AkShare for sector rankings if Sina failed
+        if not result["sector_rankings"]["top"]:
+            sector_df, sector_source, sector_errors = self._call_df_candidates([
+                ("stock_sector_fund_flow_rank", {}),
+                ("stock_sector_fund_flow_summary", {}),
+            ])
+            result["errors"].extend(sector_errors)
+            if sector_df is not None:
+                name_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("板块", "行业", "名称", "name"))), None)
+                flow_col = next((c for c in sector_df.columns if any(k in str(c) for k in ("净流入", "主力", "flow", "净额"))), None)
+                if name_col and flow_col:
+                    work_df = sector_df[[name_col, flow_col]].copy()
+                    work_df[flow_col] = pd.to_numeric(work_df[flow_col], errors="coerce")
+                    work_df = work_df.dropna(subset=[flow_col])
+                    top_df = work_df.nlargest(top_n, flow_col)
+                    bottom_df = work_df.nsmallest(top_n, flow_col)
+                    result["sector_rankings"] = {
+                        "top": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in top_df.iterrows()],
+                        "bottom": [{"name": _safe_str(r[name_col]), "net_inflow": float(r[flow_col])} for _, r in bottom_df.iterrows()],
+                    }
+                    result["source_chain"].append(f"capital_sector:{sector_source}")
+
+        if not result["stock_flow"] or not result["sector_rankings"]["top"]:
+            pw_result = self._playwright_capital_flow(stock_code, top_n)
+            if not result["stock_flow"] and pw_result["stock_flow"]:
+                result["stock_flow"] = pw_result["stock_flow"]
+                result["source_chain"].extend(pw_result["source_chain"])
+            if not result["sector_rankings"]["top"] and pw_result["sector_rankings"]["top"]:
+                result["sector_rankings"] = pw_result["sector_rankings"]
+                result["source_chain"].extend(
+                    [s for s in pw_result["source_chain"] if "sector" in s]
+                )
+            result["errors"].extend(pw_result["errors"])
 
         has_content = bool(result["stock_flow"] or result["sector_rankings"]["top"] or result["sector_rankings"]["bottom"])
         result["status"] = "partial" if has_content else "not_supported"

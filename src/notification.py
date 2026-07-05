@@ -1138,9 +1138,6 @@ class NotificationService(
         ma_label = _nlabel("Moving Averages", "均线", "이동평균")
         volume_analysis_label = _nlabel("Volume", "量能", "거래량")
         news_heading = _nlabel("News Flow", "消息面", "뉴스 흐름")
-        import os as _os
-        _env_rre = _os.getenv('REPORT_RENDERER_ENABLED', 'NOT_SET')
-        print(f"DEBUG_RENDERER: env_len={len(_env_rre)} env_starts_t={_env_rre.startswith('t')} config_val={getattr(config, 'report_renderer_enabled', 'MISSING')}")
         if getattr(config, 'report_renderer_enabled', False) and results:
             from src.services.report_renderer import render
             out = render(

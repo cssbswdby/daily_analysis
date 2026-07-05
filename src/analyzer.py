@@ -4367,15 +4367,15 @@ class GeminiAnalyzer:
             raise ValueError("ambiguous_json")
         if len(fenced_matches) == 1:
             match = fenced_matches[0]
-            outside = (text[:match.start()] + text[match.end():]).strip()
-            if outside:
-                raise ValueError("ambiguous_json")
             fence_lang = (match.group("lang") or "").strip().lower()
             if fence_lang not in {"", "json"}:
                 raise ValueError("ambiguous_json")
             json_str = match.group("body").strip()
-            data = self._load_analysis_json_candidate(json_str)
-            return json_str, data
+            try:
+                data = self._load_analysis_json_candidate(json_str)
+                return json_str, data
+            except (json.JSONDecodeError, ValueError):
+                pass  # Fall through to try other parsing methods
         if "```" in text:
             raise ValueError("ambiguous_json")
 

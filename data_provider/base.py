@@ -3347,7 +3347,7 @@ class DataFetcherManager:
             )
             result_ctx["status"] = "partial"
         else:
-            capital_flow_budget = min(fetch_timeout, remaining_seconds)
+            capital_flow_budget = max(10, min(fetch_timeout, remaining_seconds))
             capital_flow_start = time.time()
             result_ctx["capital_flow"] = self.get_capital_flow_context(
                 stock_code,

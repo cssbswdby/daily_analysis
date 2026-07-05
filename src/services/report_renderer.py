@@ -150,6 +150,8 @@ def render(
             "inflow_10d": stock_flow.get("inflow_10d"),
             "sector_inflow_top": [s.get("name", "") for s in top_sectors[:3] if isinstance(s, dict)] or [],
             "sector_outflow_top": [s.get("name", "") for s in bottom_sectors[:3] if isinstance(s, dict)] or [],
+            "breakdown": stock_flow.get("breakdown", {}),
+            "top_trades": stock_flow.get("top_trades", []),
         }
 
     sorted_enriched = []
@@ -248,10 +250,7 @@ def render(
             autoescape=select_autoescape(default=False),
         )
         template = env.get_template(template_name)
-        result = template.render(**context)
-        print(f"DEBUG_RENDERER: template={template_name} result_len={len(result) if result else 0}")
-        return result
+        return template.render(**context)
     except Exception as e:
-        print(f"DEBUG_RENDERER: RENDER_FAILED template={template_name} error={e}")
         logger.warning("Report render failed for %s: %s", template_name, e)
         return None

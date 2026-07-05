@@ -121,6 +121,31 @@
 |------|------|------|
 | {{ cf.main_net_inflow or 'N/A' }} | {{ cf.inflow_5d or 'N/A' }} | {{ cf.inflow_10d or 'N/A' }} |
 
+{% if cf.breakdown %}
+**📋 资金分类明细**
+
+| 分类 | 笔数 | 买入(万) | 卖出(万) | 净额(万) |
+|------|------|---------|---------|---------|
+{% set bd = cf.breakdown %}
+{% if bd.super_large %}| 超大单(>100万) | {{ bd.super_large.count }} | {{ (bd.super_large.buy / 10000)|round(0)|int }} | {{ (bd.super_large.sell / 10000)|round(0)|int }} | {{ (bd.super_large.net / 10000)|round(0)|int }} |
+{% endif %}
+{% if bd.large %}| 大单(20-100万) | {{ bd.large.count }} | {{ (bd.large.buy / 10000)|round(0)|int }} | {{ (bd.large.sell / 10000)|round(0)|int }} | {{ (bd.large.net / 10000)|round(0)|int }} |
+{% endif %}
+{% if bd.medium %}| 中单(4-20万) | {{ bd.medium.count }} | {{ (bd.medium.buy / 10000)|round(0)|int }} | {{ (bd.medium.sell / 10000)|round(0)|int }} | {{ (bd.medium.net / 10000)|round(0)|int }} |
+{% endif %}
+{% if bd.small %}| 小单(<4万) | {{ bd.small.count }} | {{ (bd.small.buy / 10000)|round(0)|int }} | {{ (bd.small.sell / 10000)|round(0)|int }} | {{ (bd.small.net / 10000)|round(0)|int }} |
+{% endif %}
+{% endif %}
+
+{% if cf.top_trades %}
+**🔍 大单明细（Top 10）**
+
+| 时间 | 价格 | 成交量(手) | 成交额(万) | 方向 |
+|------|------|-----------|-----------|------|
+{% for t in cf.top_trades %}| {{ t.time }} | {{ t.price }} | {{ t.volume }} | {{ (t.amount / 10000)|round(0)|int }} | {{ t.side }} |
+{% endfor %}
+{% endif %}
+
 {% if cf.sector_inflow_top %}**🟢 {{ labels.sector_inflow_top_label }}**: {{ cf.sector_inflow_top|join('、') }}
 {% endif %}
 {% if cf.sector_outflow_top %}**🔴 {{ labels.sector_outflow_top_label }}**: {{ cf.sector_outflow_top|join('、') }}
